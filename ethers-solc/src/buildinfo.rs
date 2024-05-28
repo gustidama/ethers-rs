@@ -1,10 +1,10 @@
 //! Represents an entire build
 
 use crate::{utils, CompilerInput, CompilerOutput, SolcError};
-use md5::Digest;
+use sha2::{Sha256, Digest};
 use semver::Version;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
-use std::{cell::RefCell, path::Path, rc::Rc};
+use std::{cell::RefCell, io::Write, path::Path, rc::Rc};
 
 pub const ETHERS_FORMAT_VERSION: &str = "ethers-rs-sol-build-info-1";
 
@@ -15,7 +15,7 @@ pub struct BuildInfo {
     pub id: String,
     #[serde(rename = "_format")]
     pub format: String,
-    pub solc_version: Version,
+    pub solc_version: String,
     pub solc_long_version: Version,
     pub input: CompilerInput,
     pub output: CompilerOutput,
@@ -46,7 +46,7 @@ impl RawBuildInfo {
         output: &CompilerOutput,
         version: &Version,
     ) -> serde_json::Result<RawBuildInfo> {
-        let mut hasher = md5::Md5::new();
+        let mut hasher = Sha256::new();
         let w = BuildInfoWriter { buf: Rc::new(RefCell::new(Vec::with_capacity(128))) };
         let mut buf = w.clone();
         let mut serializer = serde_json::Serializer::pretty(&mut buf);
@@ -54,12 +54,10 @@ impl RawBuildInfo {
         s.serialize_field("_format", &ETHERS_FORMAT_VERSION)?;
         let solc_short = format!("{}.{}.{}", version.major, version.minor, version.patch);
         s.serialize_field("solcVersion", &solc_short)?;
-        s.serialize_field("solcLongVersion", &version)?;
+        s.serialize_field("solcLongVersion", version)?;
         s.serialize_field("input", input)?;
 
         // create the hash for `{_format,solcVersion,solcLongVersion,input}`
-        // N.B. this is not exactly the same as hashing the json representation of these values but
-        // the must efficient one
         hasher.update(&*w.buf.borrow());
         let result = hasher.finalize();
         let id = hex::encode(result);
@@ -70,10 +68,8 @@ impl RawBuildInfo {
 
         drop(buf);
 
-        let build_info = unsafe {
-            // serde_json does not emit non UTF8
-            String::from_utf8_unchecked(w.buf.take())
-        };
+        let build_info = String::from_utf8(w.buf.take())
+            .expect("serde_json does not emit non-UTF8");
 
         Ok(RawBuildInfo { id, build_info })
     }
@@ -84,7 +80,7 @@ struct BuildInfoWriter {
     buf: Rc<RefCell<Vec<u8>>>,
 }
 
-impl std::io::Write for BuildInfoWriter {
+impl Write for BuildInfoWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.buf.borrow_mut().write(buf)
     }
